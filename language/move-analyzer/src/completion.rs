@@ -2,15 +2,18 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::context::Context;
+use crate::{context::Context, symbols::Symbols};
 use lsp_server::Request;
 use lsp_types::{CompletionItem, CompletionItemKind, CompletionParams, Position};
 use move_command_line_common::files::FileHash;
-use move_compiler::parser::{
-    keywords::{BUILTINS, CONTEXTUAL_KEYWORDS, KEYWORDS, PRIMITIVE_TYPES},
-    lexer::{Lexer, Tok},
+use move_compiler::{
+    parser::{
+        keywords::{BUILTINS, CONTEXTUAL_KEYWORDS, KEYWORDS, PRIMITIVE_TYPES},
+        lexer::{Lexer, Tok},
+    },
+    typing::ast::Function,
 };
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 /// Constructs an `lsp_types::CompletionItem` with the given `label` and `kind`.
 fn completion_item(label: &str, kind: CompletionItemKind) -> CompletionItem {
@@ -68,7 +71,10 @@ fn builtins() -> Vec<CompletionItem> {
 /// server did not initialize with a response indicating it's capable of providing completions. In
 /// the future, the server should be modified to return semantically valid completion items, not
 /// simple textual suggestions.
-fn identifiers(buffer: &str) -> Vec<CompletionItem> {
+fn identifiers(
+    buffer: &str,
+    function_map: Option<&BTreeMap<String, Function>>,
+) -> Vec<CompletionItem> {
     let mut lexer = Lexer::new(buffer, FileHash::new(buffer));
     if lexer.advance().is_err() {
         return vec![];
@@ -96,7 +102,19 @@ fn identifiers(buffer: &str) -> Vec<CompletionItem> {
     // not any deeper semantic analysis.
     let items = ids
         .iter()
-        .map(|label| completion_item(label, CompletionItemKind::Text))
+        .map(|label| {
+            let item = if let Some(fun_map) = function_map {
+                if fun_map.contains_key(&label.to_string()) {
+                    completion_item(label, CompletionItemKind::Function)
+                } else {
+                    completion_item(label, CompletionItemKind::Text)
+                }
+            } else {
+                completion_item(label, CompletionItemKind::Text)
+            };
+
+            item
+        })
         .collect();
     items
 }
@@ -131,7 +149,7 @@ fn get_cursor_token(buffer: &str, position: &Position) -> Option<Tok> {
 /// Sends the given connection a response to a completion request.
 ///
 /// The completions returned depend upon where the user's cursor is positioned.
-pub fn on_completion_request(context: &Context, request: &Request) {
+pub fn on_completion_request(context: &Context, request: &Request, symbols: &Symbols) {
     eprintln!("handling completion request");
     let parameters = serde_json::from_value::<CompletionParams>(request.params.clone())
         .expect("could not deserialize completion request");
@@ -172,7 +190,7 @@ pub fn on_completion_request(context: &Context, request: &Request) {
     }
 
     if let Some(buffer) = &buffer {
-        let identifiers = identifiers(buffer);
+        let identifiers = identifiers(buffer, symbols.file_functions.get(&path));
         items.extend_from_slice(&identifiers);
     }
 

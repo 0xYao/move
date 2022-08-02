@@ -201,6 +201,8 @@ pub struct Symbols {
     file_use_defs: BTreeMap<PathBuf, UseDefMap>,
     /// A mapping from file hashes to file names
     file_name_mapping: BTreeMap<FileHash, Symbol>,
+    /// A mapping from function names to function definitions
+    pub file_functions: BTreeMap<PathBuf, BTreeMap<String, Function>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -540,6 +542,7 @@ impl Symbols {
         }
         self.file_use_defs.extend(other.file_use_defs);
         self.file_name_mapping.extend(other.file_name_mapping);
+        self.file_functions.extend(other.file_functions);
     }
 }
 
@@ -652,21 +655,30 @@ impl Symbolicator {
 
         let mut references = BTreeMap::new();
         let mut file_use_defs = BTreeMap::new();
+        let mut function_map = BTreeMap::new();
+        let mut file_functions = BTreeMap::new();
+
         for (pos, module_ident, module_def) in modules {
             let mut use_defs = mod_use_defs.remove(module_ident).unwrap();
             symbolicator.current_mod = Some(sp(pos, *module_ident));
-            symbolicator.mod_symbols(module_def, &mut references, &mut use_defs);
+            symbolicator.mod_symbols(
+                module_def,
+                &mut references,
+                &mut use_defs,
+                &mut function_map,
+            );
 
             let fpath = match source_files.get(&pos.file_hash()) {
                 Some((p, _)) => p,
                 None => continue,
             };
 
+            let fpath_buffer = dunce::canonicalize(fpath.as_str())
+                .unwrap_or_else(|_| PathBuf::from(fpath.as_str()));
+
+            file_functions.insert(fpath_buffer.to_owned(), function_map.clone());
             file_use_defs
-                .entry(
-                    dunce::canonicalize(fpath.as_str())
-                        .unwrap_or_else(|_| PathBuf::from(fpath.as_str())),
-                )
+                .entry(fpath_buffer)
                 .or_insert_with(UseDefMap::new)
                 .extend(use_defs.elements());
         }
@@ -675,7 +687,9 @@ impl Symbolicator {
             references,
             file_use_defs,
             file_name_mapping,
+            file_functions,
         };
+
         Ok((Some(symbols), ide_diagnostics))
     }
 
@@ -685,6 +699,7 @@ impl Symbolicator {
             file_use_defs: BTreeMap::new(),
             references: BTreeMap::new(),
             file_name_mapping: BTreeMap::new(),
+            file_functions: BTreeMap::new(),
         }
     }
 
@@ -777,6 +792,7 @@ impl Symbolicator {
         mod_def: &ModuleDefinition,
         references: &mut BTreeMap<DefLoc, BTreeSet<UseLoc>>,
         use_defs: &mut UseDefMap,
+        function_map: &mut BTreeMap<String, Function>,
     ) {
         for (pos, name, fun) in &mod_def.functions {
             // enter self-definition for function name (unwrap safe - done when inserting def)
@@ -817,6 +833,7 @@ impl Symbolicator {
                 ),
             );
             self.fun_symbols(fun, references, use_defs);
+            function_map.insert(name.to_string(), fun.clone());
         }
 
         for (pos, name, c) in &mod_def.constants {
