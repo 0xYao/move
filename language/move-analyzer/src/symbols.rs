@@ -59,7 +59,8 @@ use lsp_server::{Request, RequestId};
 use lsp_types::{
     request::GotoTypeDefinitionParams, Diagnostic, DocumentSymbol, DocumentSymbolParams,
     GotoDefinitionParams, Hover, HoverContents, HoverParams, LanguageString, Location,
-    MarkedString, Position, Range, ReferenceParams, SymbolKind,
+    MarkedString, ParameterInformation, Position, Range, ReferenceParams, SignatureHelp,
+    SignatureInformation, SymbolKind,
 };
 
 use std::{
@@ -564,6 +565,10 @@ impl FunctionIdentTypeMap {
 
     fn insert(&mut self, key: String, val: IdentType) {
         self.0.entry(key).or_insert_with(|| val);
+    }
+
+    fn get(&self, key: &String) -> Option<&IdentType> {
+        self.0.get(key)
     }
 
     pub fn contains_key(self, key: &String) -> bool {
@@ -2188,6 +2193,93 @@ pub fn on_hover_request(context: &Context, request: &Request, symbols: &Symbols)
             Some(serde_json::to_value(Hover { contents, range }).unwrap())
         },
     );
+}
+
+pub fn on_signature_help_request(context: &Context, request: &Request, symbols: &Symbols) {
+    let parameters = serde_json::from_value::<HoverParams>(request.params.clone())
+        .expect("could not deserialize signature_help request");
+
+    let fpath = parameters
+        .text_document_position_params
+        .text_document
+        .uri
+        .to_file_path()
+        .unwrap();
+
+    let buffer = context.files.get(&fpath).unwrap();
+
+    let loc = parameters.text_document_position_params.position;
+    let line = loc.line;
+
+    // 1. Find the referenced function name:
+    let line_content = buffer.lines().nth(line as usize).unwrap();
+    let function_name = line_content.trim().split("(").next().unwrap().to_string();
+    let function_ident = symbols
+        .file_functions
+        .get(&fpath)
+        .unwrap()
+        .get(&function_name);
+
+    match function_ident {
+        Some(ident) => {
+            match ident {
+                IdentType::FunctionType(_, _, _, args, _, _) => {
+                    // 2. Compute the label offsets of the parameters
+                    let signature_label = format!("{}", ident);
+                    let signature_split = signature_label.split("(").collect::<Vec<_>>();
+
+                    // Add 1 to include the left open bracket "("
+                    let start_offset = signature_split.get(0).unwrap().len() + 1;
+                    let mut accum_args_len = 0;
+
+                    let parameter_label_offsets = args
+                        .iter()
+                        .map(type_to_ide_string)
+                        .map(|arg| {
+                            let start_idx = start_offset + accum_args_len;
+                            let end_idx = start_idx + arg.len();
+
+                            // Add 2 to account for ", " (a comma and a space between the arguments)
+                            accum_args_len += arg.len() + 2;
+
+                            ParameterInformation {
+                                label: lsp_types::ParameterLabel::LabelOffsets([
+                                    start_idx as u32,
+                                    end_idx as u32,
+                                ]),
+                                documentation: None,
+                            }
+                        })
+                        .collect();
+
+                    // 3. @todo Compute the active parameter
+                    let signature_help = SignatureHelp {
+                        signatures: vec![SignatureInformation {
+                            label: signature_label,
+                            documentation: None,
+                            parameters: Some(parameter_label_offsets),
+                            active_parameter: None,
+                        }],
+                        // We only have one signature so the active signature is always at index 0
+                        active_signature: Some(0),
+                        // Setting the active parameter here is more reliable than SignatureInformation.active_parameter
+                        active_parameter: None,
+                    };
+
+                    let response = lsp_server::Response::new_ok(request.id.clone(), signature_help);
+                    if let Err(err) = context
+                        .connection
+                        .sender
+                        .send(lsp_server::Message::Response(response))
+                    {
+                        eprintln!("could not send signature help response: {:?}", err);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None => {}
+    }
 }
 
 /// Helper function to handle language server queries related to identifier uses
