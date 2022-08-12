@@ -2210,6 +2210,7 @@ pub fn on_signature_help_request(context: &Context, request: &Request, symbols: 
 
     let loc = parameters.text_document_position_params.position;
     let line = loc.line;
+    let col = loc.character;
 
     // 1. Find the referenced function name:
     let line_content = buffer.lines().nth(line as usize).unwrap();
@@ -2252,18 +2253,27 @@ pub fn on_signature_help_request(context: &Context, request: &Request, symbols: 
                         })
                         .collect();
 
-                    // 3. @todo Compute the active parameter
+                    // 3. Compute the active parameter
+                    let mut active_parameter = 0;
+
+                    for i in 0..col {
+                        let character = line_content.chars().nth(i as usize).unwrap_or_default();
+                        if character == ',' {
+                            active_parameter += 1;
+                        }
+                    }
+
                     let signature_help = SignatureHelp {
                         signatures: vec![SignatureInformation {
                             label: signature_label,
                             documentation: None,
                             parameters: Some(parameter_label_offsets),
-                            active_parameter: None,
+                            active_parameter: Some(active_parameter),
                         }],
                         // We only have one signature so the active signature is always at index 0
                         active_signature: Some(0),
                         // Setting the active parameter here is more reliable than SignatureInformation.active_parameter
-                        active_parameter: None,
+                        active_parameter: Some(active_parameter),
                     };
 
                     let response = lsp_server::Response::new_ok(request.id.clone(), signature_help);
