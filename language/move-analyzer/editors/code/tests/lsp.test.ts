@@ -215,4 +215,38 @@ Mocha.suite('LSP', () => {
             assert.strictEqual(isKeywordInCompletionItems(primitive, keywordsOnColon), true);
         });
     });
+
+    Mocha.test('textDocument/signatureHelp', async () => {
+        const ext = vscode.extensions.getExtension('move.move-analyzer');
+        assert.ok(ext);
+
+        await ext.activate(); // Synchronous waiting for activation to complete
+
+        // 1. get workdir
+        const workDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+
+        // 2. open doc
+        const docs = await vscode.workspace.openTextDocument(
+            path.join(workDir, 'sources/SignatureHelp.move'),
+        );
+        await vscode.window.showTextDocument(docs);
+
+        // 3. execute command
+        const params: lc.SignatureHelpParams = {
+            textDocument: {
+                uri: docs.uri.toString(),
+            },
+            position: {
+                line: 12,
+                character: 1,
+            },
+        };
+
+        const items = await vscode.commands.executeCommand<vscode.SignatureHelp>(
+            'move-analyzer.textDocumentSignatureHelp',
+            params,
+        );
+
+        assert.ok(items);
+    });
 });
